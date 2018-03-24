@@ -53,13 +53,36 @@ namespace Simple.OData.Client
             return loadAdapter;
         }
 
+        private static object CallConstructor(string assemblyName, string typeName, params object[] constructorParams)
+        {
+            Assembly assembly = null;
+#if NETSTANDARD2_0
+            assembly = Assembly.Load(new AssemblyName(assemblyName));
+#else
+            assembly = this.GetType().Assembly;
+#endif
+
+            var constructors = assembly.GetType(typeName).GetDeclaredConstructors();
+
+#if NETSTANDARD2_0
+            var ctor = constructors.Single(x =>
+                x.GetParameters().Count() == constructorParams.Count() &&
+                x.GetParameters().Last().ParameterType.GetTypeInfo().IsAssignableFrom(constructorParams.Last().GetType().GetTypeInfo()));
+#else
+            var ctor = constructors.Single(x =>
+                x.GetParameters().Count() == ctorParams.Count() &&
+                x.GetParameters().Last().ParameterType.IsAssignableFrom(ctorParams.Last().GetType()));
+#endif
+            return ctor.Invoke(constructorParams);
+        }
+
         private async Task<IEnumerable<string>> GetSupportedProtocolVersionsAsync(HttpResponseMessage response)
         {
             IEnumerable<string> headerValues;
             if (response.Headers.TryGetValues(HttpLiteral.DataServiceVersion, out headerValues) ||
                 response.Headers.TryGetValues(HttpLiteral.ODataVersion, out headerValues))
             {
-                return headerValues.SelectMany(x => x.Split(';')).Where(x => x.Length > 0);                
+                return headerValues.SelectMany(x => x.Split(';')).Where(x => x.Length > 0);
             }
             else
             {
@@ -88,43 +111,23 @@ namespace Simple.OData.Client
             return null;
         }
 
-        private Func<IODataModelAdapter> GetModelAdapterLoader(string protocolVersion, object extraInfo)
+        private Func<IODataModelAdapter> GetModelAdapterLoader(string protocolVersion, object metadata)
         {
             if (protocolVersion == ODataProtocolVersion.V1 ||
                 protocolVersion == ODataProtocolVersion.V2 ||
                 protocolVersion == ODataProtocolVersion.V3)
-                return () => LoadModelAdapter(AdapterV3AssemblyName, ModelAdapterV3TypeName, protocolVersion, extraInfo);
+                return () => LoadModelAdapter(AdapterV3AssemblyName, ModelAdapterV3TypeName, protocolVersion, metadata);
             if (protocolVersion == ODataProtocolVersion.V4)
-                return () => LoadModelAdapter(AdapterV4AssemblyName, ModelAdapterV4TypeName, protocolVersion, extraInfo);
+                return () => LoadModelAdapter(AdapterV4AssemblyName, ModelAdapterV4TypeName, protocolVersion, metadata);
 
             return null;
         }
 
-        private IODataModelAdapter LoadModelAdapter(string modelAdapterAssemblyName, string modelAdapterTypeName, params object[] ctorParams)
+        private IODataModelAdapter LoadModelAdapter(string modelAdapterAssemblyName, string modelAdapterTypeName, string protocolVersion, object metadata)
         {
             try
             {
-                Assembly assembly = null;
-#if NETSTANDARD2_0
-                var assemblyName = new AssemblyName(modelAdapterAssemblyName);
-                assembly = Assembly.Load(assemblyName);
-#else
-                assembly = this.GetType().Assembly;
-#endif
-
-                var constructors = assembly.GetType(modelAdapterTypeName).GetDeclaredConstructors();
-
-#if NETSTANDARD2_0
-                var ctor = constructors.Single(x =>
-                    x.GetParameters().Count() == ctorParams.Count() &&
-                    x.GetParameters().Last().ParameterType.GetTypeInfo().IsAssignableFrom(ctorParams.Last().GetType().GetTypeInfo()));
-#else
-                var ctor = constructors.Single(x =>
-                    x.GetParameters().Count() == ctorParams.Count() &&
-                    x.GetParameters().Last().ParameterType.IsAssignableFrom(ctorParams.Last().GetType()));
-#endif
-
-                return ctor.Invoke(ctorParams) as IODataModelAdapter;
+                return CallConstructor(modelAdapterAssemblyName, modelAdapterTypeName, protocolVersion, metadata) as IODataModelAdapter;
             }
             catch (Exception exception)
             {
@@ -132,31 +135,16 @@ namespace Simple.OData.Client
             }
         }
 
-        private IODataAdapter LoadAdapter(string adapterAssemblyName, string adapterTypeName, params object[] ctorParams)
+        private IODataAdapter LoadAdapter(string adapterAssemblyName, string adapterTypeName, ISession session, IODataModelAdapter modelAdapter)
         {
+            // load adapter from user defined factory, if assigned and the factory can load for the target version
+            if (session.Settings.AdapterFactory != null && session.Settings.AdapterFactory.CanLoadForModel(modelAdapter))
+            {
+                return session.Settings.AdapterFactory.LoadAdapter(session, modelAdapter);
+            }
             try
             {
-                Assembly assembly = null;
-#if NETSTANDARD2_0
-                var assemblyName = new AssemblyName(adapterAssemblyName);
-                assembly = Assembly.Load(assemblyName);
-#else
-                assembly = this.GetType().Assembly;
-#endif
-
-                var constructors = assembly.GetType(adapterTypeName).GetDeclaredConstructors();
-
-#if NETSTANDARD2_0
-                var ctor = constructors.Single(x =>
-                    x.GetParameters().Count() == ctorParams.Count() &&
-                    x.GetParameters().Last().ParameterType.GetTypeInfo().IsAssignableFrom(ctorParams.Last().GetType().GetTypeInfo()));
-#else
-                var ctor = constructors.Single(x =>
-                    x.GetParameters().Count() == ctorParams.Count() &&
-                    x.GetParameters().Last().ParameterType.IsAssignableFrom(ctorParams.Last().GetType()));
-#endif
-
-                return ctor.Invoke(ctorParams) as IODataAdapter;
+                return CallConstructor(adapterAssemblyName, adapterTypeName, session, modelAdapter) as IODataAdapter;
             }
             catch (Exception exception)
             {
